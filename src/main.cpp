@@ -129,7 +129,7 @@ bool time2go()
         }
         else
         {
-            time_status = "已校准";
+            time_status = "已校准";//校准时间,在时间达到6:20-40之间的时候启动!
             if (pump_working_flag == 0)
             {
                 if (timeinfo.tm_hour == 6)
@@ -146,10 +146,10 @@ bool time2go()
     return false;
 }
 
-void flag_execute()
+void flag_execute()#fixme:在这里只能一个水泵一个水泵来
 {
     if(pump_working_flag==0){
- solenoid_line = "Now:";                              //处理上报的正在工作的电磁阀
+    solenoid_line = "Now:";                              //处理上报的正在工作的电磁阀
     for (i = 0; i < length(working_solenoid_valve); i++) //四个电磁阀
     {
         if (working_solenoid_valve[i] == 0)

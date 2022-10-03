@@ -7,7 +7,7 @@ md 还是3个电磁阀好了。。。
 */
 // todo:可以做一个不同地区的不同浇水比例的工具
 ////我觉得时间变量的销毁有问题!!!
-//! really important👆
+////// really important👆/////已经修改
 #include <Arduino.h>
 #include <WiFi.h>
 #include <ArduinoJson.h>
@@ -24,6 +24,7 @@ Ticker tk;
 StaticJsonDocument<200> doc;
 WiFiClient client;
 struct tm timeinfo;
+struct tm start_work_time;
 int Solenoid_Pin[3] = {18, 19, 22}; //三个电磁阀使用的引脚
 int Pump_pin = 25;                  //水泵使用的引脚
 int auto_watering_flag = 1;
@@ -34,11 +35,11 @@ int working_solenoid_valve[3] = {0, 0, 0};
 // volatile int solenoid_valve4 = 0;
 int reboot_flag = 0;
 String time_status = "";
-String solenoid_line = "Now:";
+int solenoid_line = 0;
 // volatile int which2debug_num = 0; //正在debug的电磁阀的序号,可能不需要这个变量了
 float soil_moisture = 0;
-float soil_moisture_need = 20; //?
-int *time_flag = new int(0);   //必须这样做否则没法delete
+float soil_moisture_need = 25; //最低土壤湿度
+int *time_flag = new int(0);  //必须这样做否则没法delete
 int work_times = 0;
 int wat_begin_hour = 4;
 int wat_begin_min = 40;
@@ -48,19 +49,25 @@ int delaytime = 1200 * 1000; // 500*1000
 int carwash_time = 2400 * 1000;
 const char *ssid = "family_2.4g";
 const char *password = "13505795150";
+// const char *ssid = "Franklinn";
+// const char *password = "hufeihufei";
 const char *host = "tcp.tlink.io";
 const uint16_t httpPort = 8647;
-const char *device_id = "Z858039W96UZ87H3";
+// const char *device_id = "";// fixme:这个是测试组
+const char *device_id = "DWP0009W6WGF381Y"; 
+
 const char *ntpServer = "pool.ntp.org";
 const long gmtOffset_sec = 4 * 3600;     //不知道为何是4*60*60
 const int daylightOffset_sec = 4 * 3600; //不知道为何是4*60*60
 int i = 0;
+int wifi_retry_times = 0;
 // int led_switch = 0;
 int breakpoint_flag = 1; // 23333这个是控制断点的,不是time_flag
 char data[64];
 char time_temp[10];
 char set_begin_time[10];
 void time_fun()
+
 { //中断之后跳到这里来，不要搞的太复杂
     breakpoint_flag = 1;
 }
@@ -98,13 +105,24 @@ int length(T &arr)
     // cout << sizeof(arr) << endl;
     return sizeof(arr) / sizeof(arr[0]);
 }
-void wifi_reconnect()
+void wifi_reconnect_cx()
 {
     while (WiFi.status() != WL_CONNECTED)
     {
-        WiFi.begin(ssid, password);
-        delay(500);
+        wifi_retry_times += 1;
+        if (wifi_retry_times >= 0 && wifi_retry_times <150)
+        {
+            // WiFi.begin(ssid, password);
+            Serial.print(".");
+        }
+        else
+        {
+            Serial.println("准备重启");
+            ESP.restart();
+        }
+        delay(300);
     }
+    wifi_retry_times = 0;
 }
 void check_client_connected() //检测与tlink服务器的连接状态
 {
@@ -118,19 +136,20 @@ void check_client_connected() //检测与tlink服务器的连接状态
             client.print(device_id); /*指定设备id*/
                                      //这个函数指的不是print，而是发送！
         }
+        delay(500);
     }
     // Serial.println("connection sucess!");
 }
 void send2clinet()
 {
     sprintf(set_begin_time, "%d:%d", wat_begin_hour, wat_begin_min); //回传+读取
-    sprintf(data, "#%s*%d*%d*%d*%f*%d*%s*%d*%f*%lu*%s#", solenoid_line, carwash_flag, auto_watering_flag, hand_watering_flag, soil_moisture, pump_working_flag, time_status, reboot_flag, soil_moisture_need, delaytime / 60000, set_begin_time);
+    sprintf(data, "#%d*%d*%d*%d*%f*%d*%s*%d*%f*%lu*%s#", solenoid_line, carwash_flag, auto_watering_flag, hand_watering_flag, soil_moisture, pump_working_flag, time_status, reboot_flag, soil_moisture_need, delaytime / 60000, set_begin_time);
     // unsigned
     // sprintf(data, "#1*%d*%d*%d*%d*%d#", carwash_flag, auto_watering_flag, hand_watering_flag, soil_moisture, pump_working_flag);
     Serial.print("回送的数据为：");
     Serial.println(data);
     client.print(data);
-    delay(2000);
+    // delay(2000);
 }
 void pump_work()
 {
@@ -147,7 +166,7 @@ void pump_work()
 }
 void Solenoid_OffAll(int a = 0) // here are just flags,no electricity;just solenoids,no pump.
 {                               //输入的a不是index,而是人为的编号
-    solenoid_line = "nothing";
+    solenoid_line = a;
     hand_watering_flag = 0;
 
     for (i = 0; i < length(Solenoid_Pin); i++)
@@ -161,66 +180,71 @@ void Solenoid_OffAll(int a = 0) // here are just flags,no electricity;just solen
         working_solenoid_valve[i] = 0;
     }
 }
-bool time_plus_check(int wat_begin_hour, int wat_begin_min, tm timeinfo)
-{                     //这个gap不能超过30!不能让客户操作这个数值
-    int time_gap = 7; //在五分钟内必须进行反应
-    if (wat_begin_min < time_gap)
-    { //?对时间状态进行修改
-        if ((timeinfo.tm_hour == wat_begin_hour - 1 && timeinfo.tm_min > wat_begin_min - time_gap + 60) || (timeinfo.tm_hour == wat_begin_hour && timeinfo.tm_min < wat_begin_min + time_gap))
+int time_gap(tm now, tm set)
+{ //现在这个点和启动的时候的时差有多少?,返回分钟
+    if (now.tm_hour == set.tm_hour)
+    {
+        if (set.tm_min >= now.tm_min)
         {
-            return true;
+            return set.tm_min - now.tm_min;
         }
         else
         {
-            return false;
+            return now.tm_min - set.tm_min;
         }
     }
-    else if (time_gap + wat_begin_min > 60)
+    else if (now.tm_hour == set.tm_hour - 1)
     {
-        if ((timeinfo.tm_hour == wat_begin_hour && timeinfo.tm_min > wat_begin_min - time_gap) || (timeinfo.tm_hour == wat_begin_hour + 1 && timeinfo.tm_min < wat_begin_min + time_gap - 60))
-        {
-            return true;
-        }
-        else
-        {
-            return false;
-        }
+        return (60 - now.tm_min) + set.tm_min;
+    }
+    else if (now.tm_hour - 1 == set.tm_hour)
+    {
+        return (60 - set.tm_min) + now.tm_min;
+    }
+}
+
+bool time_plus_check(int wat_begin_hour, int wat_begin_min, tm timeinfo)
+{                     //?这个gap不能超过30?不能让客户操作这个数值吗?
+    int time_2go = 7; //在7分钟内必须进行反应
+    struct tm wat_begin;
+    wat_begin.tm_hour = wat_begin_hour;
+    wat_begin.tm_min = wat_begin_min;
+    if (time_gap(timeinfo, wat_begin) < time_2go)
+    {
+        return true;
     }
     else
     {
-        if ((timeinfo.tm_hour == wat_begin_hour && timeinfo.tm_min > wat_begin_min - time_gap) && (timeinfo.tm_hour == wat_begin_hour && timeinfo.tm_min < wat_begin_min + time_gap))
-        {
-            return true;
-        }
-        else
-        {
-            return false;
-        }
+        return false;
     }
 }
 
 bool get_localtime()
-{
-    if (!getLocalTime(&timeinfo))
+{   wifi_retry_times = 0;
+    while (!getLocalTime(&timeinfo))
     {
+        wifi_retry_times += 1;
         time_status = "Failed";
         Serial.println("Failed to obtain time");
-        delay(2000);
-        return false;
+        delay(300);
+        if(wifi_retry_times>=200){
+            ESP.restart();
+        }
     }
-    else
-    {
-        sprintf(time_temp, "%d:%d", timeinfo.tm_hour, timeinfo.tm_min);
-        time_status = String(time_temp);
-        return true;
-    }
+    sprintf(time_temp, "%d:%d", timeinfo.tm_hour, timeinfo.tm_min);
+    time_status = String(time_temp);
+    return true;
 }
+
+// bool get_starttime(){
+
+// }
 
 bool time2go()
 {
     if (auto_watering_flag == 1)
     {
-        if (work_times > 0)
+        if (work_times > 0 || soil2wat == 1)
         { //如果手头上还有工作先做掉
             return true;
         }
@@ -234,9 +258,10 @@ bool time2go()
                 if (time_plus_check(wat_begin_hour, wat_begin_min, timeinfo))
                 {
                     pump_working_flag = 1;
-                    *time_flag = millis();
+                    // *time_flag = millis();
                     if (soil2wat == 0)
                     {
+                        start_work_time = timeinfo;
                         work_times = 3;
                         soil2wat = 1;
                     }
@@ -254,7 +279,7 @@ void flag_execute() //这个函数只负责给电,不负责别的操作
     Serial.print(pump_working_flag);
     if (pump_working_flag == 0)
     {
-        solenoid_line = "nothing";
+        solenoid_line = 0;
         pump_work();
         for (i = 0; i < length(working_solenoid_valve); i++) //电磁阀全部关掉
         {
@@ -265,7 +290,6 @@ void flag_execute() //这个函数只负责给电,不负责别的操作
     else
     {
         // Serial.print(pump_working_flag);
-        solenoid_line = "Now:";                              //处理上报的正在工作的电磁阀
         for (i = 0; i < length(working_solenoid_valve); i++) //四个电磁阀
         {
             if (working_solenoid_valve[i] == 0)
@@ -275,8 +299,8 @@ void flag_execute() //这个函数只负责给电,不负责别的操作
             else
             {
                 digitalWrite(Solenoid_Pin[i], HIGH);
+                solenoid_line = i+1;                              //处理上报的正在工作的电磁阀
 
-                solenoid_line.concat(i + 1);
             }
         }
 
@@ -303,12 +327,12 @@ float getTemp(String temp)
             }
         }
     }
-    return (info[3].toInt() * 256 + info[4].toInt()) / 10.0; ////这里传回的是一个整数,我们需要小数
+    return (info[3].toInt() * 256 + info[4].toInt()) / 10.00; ////这里传回的是一个整数,我们需要小数
 }
 
 void check_soil() //检测土壤湿度
 {
-    delay(500); // 放慢输出频率
+    // delay(500); // 放慢输出频率
     for (int i = 0; i < 8; i++)
     {                              // 发送测温命令
         tempSerial.write(item[i]); // write输出
@@ -339,18 +363,19 @@ void check_soil() //检测土壤湿度
 bool soil_go()
 {
     check_soil();
-    if (soil2wat == 1)
+    if (soil2wat == 1 || work_times > 0)
     { //表示目前水还在浇水
         return true;
     }
-    if (soil_moisture_need > soil_moisture && auto_watering_flag == 1)
+    if (soil_moisture_need > soil_moisture && auto_watering_flag == 1 && soil_moisture != 0) //还要判断一下土壤湿度是不是没有正常返回回来
     {
         pump_working_flag = 1;
-        *time_flag = millis();
+        // *time_flag = millis();
         if (soil2wat == 0)
         {
             work_times = 3;
             soil2wat = 1;
+            start_work_time = timeinfo;
         }
         return true;
     }
@@ -366,8 +391,8 @@ void shut_all()
     pump_working_flag = 0;
     soil2wat = 0;
     Solenoid_OffAll(0);
-    delete time_flag; //&返回地址,*返回所对应的值
-    int *time_flag = new int(0);
+
+    work_times = 0;
 }
 
 //再写一个把正在工作的电磁阀放到一个数组中收集好的函数
@@ -394,12 +419,28 @@ void setup()
     Serial.println(ssid);
 
     WiFi.begin(ssid, password);
-    wifi_reconnect(); //应该用这个更好一点
+    wifi_reconnect_cx(); 
     // while (WiFi.status() != WL_CONNECTED)
     // {
     //     delay(500);
     //     Serial.print(".");
     // }
+    // while (WiFi.status() != WL_CONNECTED)
+    // {
+    //     wifi_retry_times += 1;
+    //     if (wifi_retry_times >= 0 && wifi_retry_times <150)
+    //     {
+    //         // WiFi.begin(ssid, password);
+    //         Serial.print(".");
+    //     }
+    //     else
+    //     {
+    //         Serial.println("准备重启");
+    //         ESP.restart();
+    //     }
+    //     delay(300);
+    // }
+    wifi_retry_times = 0;
     Serial.println("");
     Serial.println("WiFi connected");
     Serial.println("IP address: ");
@@ -427,8 +468,25 @@ void setup()
 }
 void loop()
 {
-    wifi_reconnect();
+    wifi_reconnect_cx();
+    while (WiFi.status() != WL_CONNECTED)
+    {
+        wifi_retry_times += 1;
+        if (wifi_retry_times >= 0 && wifi_retry_times <150)
+        {
+            // WiFi.begin(ssid, password);
+            Serial.print(".");
+        }
+        else
+        {
+            Serial.println("准备重启");
+            ESP.restart();
+        }
+        delay(300);
+    }
+    wifi_retry_times = 0;
     check_client_connected();
+    get_localtime();
     // Serial.println(pump_working_flag);
     // Serial.println(type(pump_working_flag));
     if (1 == breakpoint_flag)
@@ -472,15 +530,19 @@ void loop()
         }
         else if (ch.toInt() < 5 && ch.toInt() >= 1) //如果是数字的话，就开启的debug模式
         {
-                Serial.println("which pump check\n");
-                pump_working_flag = 1; //打开泵,记录flag
-                Solenoid_OffAll(ch.toInt());
-                // Serial.print(working_solenoid_valve[0]);
-                // Serial.print(working_solenoid_valve[1]);
-                // Serial.println(working_solenoid_valve[2]);
-                // Serial.print("blo");
-                // Serial.print(pump_working_flag);
+            Serial.println("which pump check\n");
+            pump_working_flag = 1; //打开泵,记录flag
+            Solenoid_OffAll(ch.toInt());
+            // Serial.print(working_solenoid_valve[0]);
+            // Serial.print(working_solenoid_valve[1]);
+            // Serial.println(working_solenoid_valve[2]);
+            // Serial.print("blo");
+            // Serial.print(pump_working_flag);
         } //
+        else if (0 == ch.compareTo("stop"))
+        {
+            shut_all();
+        }
         else
         {
             DeserializationError error = deserializeJson(doc, ch); //将数据ch解析到doc中，然后在最后返回是解析成功与否
@@ -499,7 +561,8 @@ void loop()
                 pump_working_flag = 1; // do not use 'delay'
                 if (carwash_flag == 1) ////carwash应该启动的时候禁止使用别的浇水!
                 {
-                    *time_flag = millis();
+                    // *time_flag = millis();
+                    start_work_time = timeinfo;
                 }
                 else
                 {
@@ -527,7 +590,8 @@ void loop()
                     //                     Serial.print("cnm");
                     // Serial.print(pump_working_flag);
                     pump_working_flag = 1;
-                    *time_flag = millis();
+                    // *time_flag = millis();
+                    start_work_time = timeinfo;
                     work_times = 3;
                 }
                 else
@@ -579,11 +643,12 @@ void loop()
                 }
 
                 // mid_time = time_flag - mid_time;
-                *time_flag = millis();
+                // *time_flag = millis();
                 Serial.println(*time_flag);
                 Serial.println(work_times);
-                if (*time_flag > delaytime * (4 - work_times)) // 1秒 = 1000 毫秒
-                {                                              ////这里是不是没有做减法?建议调试之后再操作这里
+                Serial.println(time_gap(timeinfo, start_work_time));
+                if ((time_gap(timeinfo, start_work_time)) * 60000 > delaytime * (4 - work_times)) // 1秒 = 1000 毫秒,感觉还是大于比较好
+                {                                                                               ////这里是不是没有做减法?建议调试之后再操作这里
 
                     work_times = work_times - 1;
                 }
@@ -595,7 +660,7 @@ void loop()
             }
         }
     }
-    else //1 == carwash_flag
+    else // 1 == carwash_flag
     {
         if (*time_flag > carwash_time)
         {

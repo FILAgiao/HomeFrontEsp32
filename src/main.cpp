@@ -24,6 +24,7 @@ Ticker tk;
 StaticJsonDocument<200> doc;
 WiFiClient client;
 struct tm timeinfo;
+struct tm NET_LOSTING_time;
 struct tm start_work_time;
 int Solenoid_Pin[3] = {18, 19, 22}; //三个电磁阀使用的引脚
 int Pump_pin = 25;                  //水泵使用的引脚
@@ -56,16 +57,20 @@ const char *password = "13505795150";
 // const char *password = "hufeihufei";
 const char *host = "tcp.tlink.io";
 const uint16_t httpPort = 8647;
+unsigned long BEGIN_TIMESTAMP=0;//处理millis的返回时间,起点
+// unsigned long END_TIMESTAMP=0;//处理millis()记录的另外一个时间,终点
+bool NET_LOSTING_FLAG=false;
 // const char *device_id = "R6P6K29X5PW1L607";// fixme:这个是测试组
 const char *device_id = "DWP0009W6WGF381Y"; 
 //
-/* 这些是设置时间的代码,但是现在被换掉了 
+/* 这些是设置时间的代码,但是现在被换为阿里云了 
 const char *ntpServer = "pool.ntp.org";
 const long gmtOffset_sec = 4 * 3600;     //不知道为何是4*60*60
 const int daylightOffset_sec = 4 * 3600; //不知道为何是4*60*60
 */
 int i = 0;
 int wifi_retry_times = 0;
+int wifi_to_reboot_times=0;
 // int led_switch = 0;
 int breakpoint_flag = 1; // 23333这个是控制断点的,不是time_flag
 char data[64];
@@ -112,6 +117,7 @@ int length(T &arr)
 }
 void wifi_reconnect_cx()
 {
+    wifi_retry_times = 0;
     while (WiFi.status() != WL_CONNECTED)
     {
         wifi_retry_times += 1;
@@ -122,15 +128,33 @@ void wifi_reconnect_cx()
         }
         else
         {
-            Serial.println("准备重启");
-            ESP.restart();
+            if(work_times>0){
+                Serial.println("使用millis()进行猜测时间");
+                NET_LOSTING_FLAG=true;
+                NET_LOSTING_time=timeinfo;
+                BEGIN_TIMESTAMP=millis();       //在此处设置了时间断点
+                break;
+            }
+            else{
+                wifi_to_reboot_times+=1;
+                if(wifi_to_reboot_times>1000*60*60/300){    //wifi实在是断开太久了
+                    Serial.println("准备重启");
+                    ESP.restart();
+                }
+                break;
+                    
+            }
+            
         }
         delay(300);
     }
-    wifi_retry_times = 0;
+    if(WiFi.status() != WL_CONNECTED){
+        NET_LOSTING_FLAG=false;
+    }
 }
 void check_client_connected() //检测与tlink服务器的连接状态
-{
+{   
+    wifi_retry_times=0;
     while (!client.connected() && WiFi.status() == WL_CONNECTED)
     {
         Serial.println("prepare to reconnect...");
@@ -142,6 +166,17 @@ void check_client_connected() //检测与tlink服务器的连接状态
                                      //这个函数指的不是print，而是发送！
         }
         delay(500);
+        if(wifi_retry_times>20){    //次数太多就break蒜了
+        wifi_retry_times=0;
+            break;
+        }
+    }
+    if(!client.connected()){
+        wifi_to_reboot_times+=1;
+        if(wifi_to_reboot_times>1000*60*60/300){    //wifi实在是断开太久了
+            Serial.println("准备重启");
+            ESP.restart();
+        }
     }
     // Serial.println("connection sucess!");
 }
@@ -228,20 +263,52 @@ bool time_plus_check(int wat_begin_hour, int wat_begin_min, tm timeinfo)
     }
 }
 
-bool get_localtime()
-{   wifi_retry_times = 0;
+void time_by_millis(unsigned long millis_second){//通过millis()函数估计时间
+ timeinfo=NET_LOSTING_time; 
+   //时间转化为秒
+    timeinfo.tm_sec+=millis_second/1000;
+    if(timeinfo.tm_sec>=60){
+        timeinfo.tm_min+=1;
+        timeinfo.tm_sec-=60;
+        if(timeinfo.tm_min>=60){
+            timeinfo.tm_hour+=1;
+            timeinfo.tm_min-=60;
+            if(timeinfo.tm_hour>=24){
+                timeinfo.tm_hour=0;
+            }
+        }
+    }
+}
+
+
+bool get_localtime(){
+    if(NET_LOSTING_FLAG){//代表现在网络断开了,要通过millis()做一个我们模拟出来的时间
+    //但是每次都要从被丢失的那个时间开始模拟,防止每次计算时间误差过大!!!
+    if(millis()-BEGIN_TIMESTAMP>1000){
+        time_by_millis((millis()-BEGIN_TIMESTAMP));
+    }  //已经过去了多少毫秒
+        Serial.print("this is net_losting_time");
+        sprintf(time_temp, "%d:%d:%d", timeinfo.tm_hour, timeinfo.tm_min,timeinfo.tm_sec);
+        time_status = String(time_temp);
+        Serial.println(time_status);
+
+    }
+   wifi_retry_times = 0;
     while (!getLocalTime(&timeinfo))
     {
         wifi_retry_times += 1;
         time_status = "Failed";
         Serial.println("Failed to obtain time");
         delay(300);
-        if(wifi_retry_times>=200){
-            ESP.restart();
+        if(wifi_retry_times>=20){
+            break;
         }
     }
+    
     sprintf(time_temp, "%d:%d", timeinfo.tm_hour, timeinfo.tm_min);
     time_status = String(time_temp);
+    Serial.println(time_status);
+    
     return true;
 }
 
@@ -491,23 +558,21 @@ void setup()
 }
 void loop()
 {
+    /*
+    修改:
+    当还在浇水的时候,如果网络断开了,应当:
+    1.开启millis(),确认时间--->修改gettime()函数,仍然返回真值
+    2.仍然继续与wifi\tlink服务器呼叫,但是不重启
+    3.通过gettime()继续推进浇水序号
+
+    完成浇水后(抑或是还没浇水前):
+    继续重新连,如果实在不行,就可以重启?
+    或:继续通过millis校准时间,实在是太久了,如几个小时未重连,就重启
+
+    
+    
+    */
     wifi_reconnect_cx();
-    while (WiFi.status() != WL_CONNECTED)
-    {
-        wifi_retry_times += 1;
-        if (wifi_retry_times >= 0 && wifi_retry_times <150)
-        {
-            // WiFi.begin(ssid, password);
-            Serial.print(".");
-        }
-        else
-        {
-            Serial.println("准备重启");
-            ESP.restart();
-        }
-        delay(300);
-    }
-    wifi_retry_times = 0;
     check_client_connected();
     get_localtime();
     // Serial.println(pump_working_flag);
@@ -651,8 +716,9 @@ void loop()
             // if(1==hand_watering_flag && auto_watering_flag==1){
             //     auto_watering_flag=999
             // }
-            Serial.print("watt");
-            Serial.print(pump_working_flag);
+            Serial.println("watt");
+            Serial.print("水泵正在工作吗:");
+            Serial.println(pump_working_flag);
             if (pump_working_flag == 1)
             {
                 if (work_times > 0)
@@ -672,13 +738,16 @@ void loop()
                 // mid_time = time_flag - mid_time;
                 // *time_flag = millis();
                 // Serial.println(*time_flag);
-                Serial.println(work_times);
+                
+                Serial.print("和开始的时间相差分钟数:");
                 Serial.println(time_gap(timeinfo, start_work_time));
                 if ((time_gap(timeinfo, start_work_time)) * 60000 > delaytime * (4 - work_times)) // 1秒 = 1000 毫秒,感觉还是大于比较好
                 {                                                                               ////这里是不是没有做减法?建议调试之后再操作这里
 
                     work_times = work_times - 1;
                 }
+                Serial.print("在浇倒数第几轮:");
+                Serial.println(work_times);
                 if (work_times == 0) //不能是-1否则会在最后一个引脚多执行一次
                 {
                     shut_all();

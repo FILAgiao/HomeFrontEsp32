@@ -39,7 +39,10 @@ int solenoid_line = 0;
 // volatile int which2debug_num = 0; //正在debug的电磁阀的序号,可能不需要这个变量了
 float soil_moisture = 0;
 float soil_moisture_need = 25; //最低土壤湿度
-int *time_flag = new int(0);  //必须这样做否则没法delete
+// float soil_moisture_history_avg;
+int soil_moisture_test_maxsize=777; //这个数值不能太大,否则会导致一次太干,但是浇完水还是没啥反应.
+int soil_moisture_list_size=0;
+// int *time_flag = new int(0);  //必须这样做否则没法delete
 int work_times = 0;
 int wat_begin_hour = 4;
 int wat_begin_min = 40;
@@ -53,12 +56,14 @@ const char *password = "13505795150";
 // const char *password = "hufeihufei";
 const char *host = "tcp.tlink.io";
 const uint16_t httpPort = 8647;
-// const char *device_id = "";// fixme:这个是测试组
+// const char *device_id = "R6P6K29X5PW1L607";// fixme:这个是测试组
 const char *device_id = "DWP0009W6WGF381Y"; 
-
+//
+/* 这些是设置时间的代码,但是现在被换掉了 
 const char *ntpServer = "pool.ntp.org";
 const long gmtOffset_sec = 4 * 3600;     //不知道为何是4*60*60
 const int daylightOffset_sec = 4 * 3600; //不知道为何是4*60*60
+*/
 int i = 0;
 int wifi_retry_times = 0;
 // int led_switch = 0;
@@ -201,6 +206,9 @@ int time_gap(tm now, tm set)
     {
         return (60 - set.tm_min) + now.tm_min;
     }
+    else{
+        return 24*60;   //代表一个很长的时间,24h*60min,即超出后面的时间区间范围
+    }
 }
 
 bool time_plus_check(int wat_begin_hour, int wat_begin_min, tm timeinfo)
@@ -210,7 +218,8 @@ bool time_plus_check(int wat_begin_hour, int wat_begin_min, tm timeinfo)
     wat_begin.tm_hour = wat_begin_hour;
     wat_begin.tm_min = wat_begin_min;
     if (time_gap(timeinfo, wat_begin) < time_2go)
-    {
+    {   
+        Serial.println("reached the target timezone:Start");
         return true;
     }
     else
@@ -330,6 +339,17 @@ float getTemp(String temp)
     return (info[3].toInt() * 256 + info[4].toInt()) / 10.00; ////这里传回的是一个整数,我们需要小数
 }
 
+void soil_moisture_into_list(float soil_m){
+    //将土壤湿度写入到数组中,防止其对土壤变化太敏感
+    //但是会导致你把传感器拔出来之后,仍然一直有显示土壤湿度:正确的应该是把检测器放到水里
+    if(0!=soil_m){
+    if(soil_moisture_list_size<soil_moisture_test_maxsize){
+        soil_moisture_list_size+=1;
+    }
+       soil_moisture=(soil_moisture*(soil_moisture_list_size-1))/soil_moisture_list_size + soil_m/soil_moisture_list_size;
+    }
+}
+
 void check_soil() //检测土壤湿度
 {
     // delay(500); // 放慢输出频率
@@ -354,11 +374,13 @@ void check_soil() //检测土壤湿度
     { //先输出一下接收到的数据
         // Serial.println();
         // Serial.println(data);
-        soil_moisture = getTemp(data_soil);
+        soil_moisture_into_list(getTemp(data_soil));
         Serial.print(soil_moisture);
         Serial.println("%water");
     }
 }
+
+
 ////需要再写一个判断土壤湿度是否适宜的程序,也从网上读取参数
 bool soil_go()
 {
@@ -403,6 +425,8 @@ void setup()
     // put your setup code here, to run once:
     tempSerial.begin(4800);
     Serial.begin(9600);
+    configTime(8 * 3600, 0, "ntp1.aliyun.com", "ntp2.aliyun.com");
+    // configTime(gmtOffset_sec, daylightOffset_sec, ntpServer);
     delay(10);
     for (i = 0; i < length(Solenoid_Pin); i++)
     {
@@ -450,7 +474,6 @@ void setup()
     Serial.print(':');
     Serial.println(httpPort);
     // init and get the time
-    configTime(gmtOffset_sec, daylightOffset_sec, ntpServer);
     // Use WiFiClient class to create TCP connections
     if (!client.connect(host, httpPort))
     {
@@ -517,6 +540,7 @@ void loop()
         }
         else if (ch.lastIndexOf('x') != -1)
         { //!读取你所需要的最少时间,小心字母重复!
+        //输入分钟数量+x,如:25x
             Serial.println("least time check\n");
             delaytime = ch.substring(0, ch.length() - 1).toInt() * 60000; /////这个时间不是很对的,需要测试的时候得到相关时间的单位然后进行修改!
             Serial.print(delaytime);
@@ -624,6 +648,9 @@ void loop()
         if (((time2go() || soil_go()) && 1 == auto_watering_flag) || 1 == hand_watering_flag) // fixme:time2go可能需要再大一点；1.算好delay和time2go;2.做一个每天几次，或者上下午几次的东西
         //这里如果auto_watering_flag==1在前面,当其为0的时候time2go()和soil_go()不会执行了,所以应该放在后面
         {
+            // if(1==hand_watering_flag && auto_watering_flag==1){
+            //     auto_watering_flag=999
+            // }
             Serial.print("watt");
             Serial.print(pump_working_flag);
             if (pump_working_flag == 1)
@@ -644,7 +671,7 @@ void loop()
 
                 // mid_time = time_flag - mid_time;
                 // *time_flag = millis();
-                Serial.println(*time_flag);
+                // Serial.println(*time_flag);
                 Serial.println(work_times);
                 Serial.println(time_gap(timeinfo, start_work_time));
                 if ((time_gap(timeinfo, start_work_time)) * 60000 > delaytime * (4 - work_times)) // 1秒 = 1000 毫秒,感觉还是大于比较好
@@ -662,7 +689,7 @@ void loop()
     }
     else // 1 == carwash_flag
     {
-        if (*time_flag > carwash_time)
+        if (time_gap(timeinfo, start_work_time) * 60000 > carwash_time)
         {
             shut_all();
             carwash_flag = 0;

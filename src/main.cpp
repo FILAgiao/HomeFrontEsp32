@@ -49,8 +49,8 @@ int wat_begin_hour = 4;
 int wat_begin_min = 40;
 int soil2wat = 0; //如果是这个状态代表因为土壤干燥正在浇水
 // int pinled = 32;
-int delaytime = 1200 * 1000; // 500*1000
-int carwash_time = 2400 * 1000;
+int delaytime = 20; // 500*1000
+int carwash_time = 40;
 const char *ssid = "family_2.4g";
 const char *password = "13505795150";
 // const char *ssid = "Franklinn";
@@ -60,6 +60,9 @@ const uint16_t httpPort = 8647;
 unsigned long BEGIN_TIMESTAMP=0;//处理millis的返回时间,起点
 // unsigned long END_TIMESTAMP=0;//处理millis()记录的另外一个时间,终点
 bool NET_LOSTING_FLAG=false;
+bool time_to_go_flag=false;
+bool soil_to_go_flag=false;
+int time_gap_min=0;
 // const char *device_id = "R6P6K29X5PW1L607";// fixme:这个是测试组
 const char *device_id = "DWP0009W6WGF381Y"; 
 //
@@ -115,6 +118,17 @@ int length(T &arr)
     // cout << sizeof(arr) << endl;
     return sizeof(arr) / sizeof(arr[0]);
 }
+void send2clinet()
+{
+    sprintf(set_begin_time, "%d:%d", wat_begin_hour, wat_begin_min); //回传+读取
+    sprintf(data, "#%d*%d*%d*%d*%f*%d*%s*%d*%f*%lu*%s#", solenoid_line, carwash_flag, auto_watering_flag, hand_watering_flag, soil_moisture, pump_working_flag, time_status, reboot_flag, soil_moisture_need, delaytime, set_begin_time);
+    // unsigned
+    // sprintf(data, "#1*%d*%d*%d*%d*%d#", carwash_flag, auto_watering_flag, hand_watering_flag, soil_moisture, pump_working_flag);
+    Serial.print("回送的数据为：");
+    Serial.println(data);
+    client.print(data);
+    // delay(2000);
+}
 void wifi_reconnect_cx()
 {
     wifi_retry_times = 0;
@@ -139,6 +153,8 @@ void wifi_reconnect_cx()
                 wifi_to_reboot_times+=1;
                 if(wifi_to_reboot_times>1000*60*60/300){    //wifi实在是断开太久了
                     Serial.println("准备重启");
+                    solenoid_line=-1;
+                    send2clinet();
                     ESP.restart();
                 }
                 break;
@@ -175,22 +191,14 @@ void check_client_connected() //检测与tlink服务器的连接状态
         wifi_to_reboot_times+=1;
         if(wifi_to_reboot_times>1000*60*60/300){    //wifi实在是断开太久了
             Serial.println("准备重启");
+            solenoid_line=-1;
+            send2clinet();
             ESP.restart();
         }
     }
     // Serial.println("connection sucess!");
 }
-void send2clinet()
-{
-    sprintf(set_begin_time, "%d:%d", wat_begin_hour, wat_begin_min); //回传+读取
-    sprintf(data, "#%d*%d*%d*%d*%f*%d*%s*%d*%f*%lu*%s#", solenoid_line, carwash_flag, auto_watering_flag, hand_watering_flag, soil_moisture, pump_working_flag, time_status, reboot_flag, soil_moisture_need, delaytime / 60000, set_begin_time);
-    // unsigned
-    // sprintf(data, "#1*%d*%d*%d*%d*%d#", carwash_flag, auto_watering_flag, hand_watering_flag, soil_moisture, pump_working_flag);
-    Serial.print("回送的数据为：");
-    Serial.println(data);
-    client.print(data);
-    // delay(2000);
-}
+
 void pump_work()
 {
     if (pump_working_flag == 1)
@@ -423,6 +431,7 @@ void check_soil() //检测土壤湿度
     for (int i = 0; i < 8; i++)
     {                              // 发送测温命令
         tempSerial.write(item[i]); // write输出
+        // Serial.println("正在写入TX数据");
                                    // Serial.println(item[i]);
     }
     delay(100); // 等待测温数据返回
@@ -454,7 +463,8 @@ bool soil_go()
     check_soil();
     if (soil2wat == 1 || work_times > 0)
     { //表示目前水还在浇水
-        return true;
+        return true;//?这样写对吗
+        Serial.println("1");
     }
     if (soil_moisture_need > soil_moisture && auto_watering_flag == 1 && soil_moisture != 0) //还要判断一下土壤湿度是不是没有正常返回回来
     {
@@ -466,11 +476,13 @@ bool soil_go()
             soil2wat = 1;
             start_work_time = timeinfo;
         }
+         Serial.println("2");
         return true;
     }
     else
     {
         // pump_working_flag = 0;这样写有很大的问题!
+         Serial.println("3");
         return false;
     }
 }
@@ -480,7 +492,7 @@ void shut_all()
     pump_working_flag = 0;
     soil2wat = 0;
     Solenoid_OffAll(0);
-
+Serial.println("shut_all()被执行了");
     work_times = 0;
 }
 
@@ -568,10 +580,10 @@ void loop()
     完成浇水后(抑或是还没浇水前):
     继续重新连,如果实在不行,就可以重启?
     或:继续通过millis校准时间,实在是太久了,如几个小时未重连,就重启
-
-    
-    
+     
     */
+   //todo:1.将代码移植到带天线的esp32上
+   //2.增加几个开关,用于离线控制
     wifi_reconnect_cx();
     check_client_connected();
     get_localtime();
@@ -607,15 +619,15 @@ void loop()
         { //!读取你所需要的最少时间,小心字母重复!
         //输入分钟数量+x,如:25x
             Serial.println("least time check\n");
-            delaytime = ch.substring(0, ch.length() - 1).toInt() * 60000; /////这个时间不是很对的,需要测试的时候得到相关时间的单位然后进行修改!
+            delaytime = ch.substring(0, ch.length() - 1).toInt() ; /////这个时间不是很对的,需要测试的时候得到相关时间的单位然后进行修改!
             Serial.print(delaytime);
             carwash_time = delaytime * 2;
         }
-        else if (ch.lastIndexOf(':') != -1 && ch.lastIndexOf('v') != -1)
-        { //应当输入5:31v
+        else if (ch.lastIndexOf('v') != -1)
+        { //应当输入5v31
             Serial.println("began time check\n");
-            wat_begin_hour = fenge(ch, ":", 0).toInt();
-            wat_begin_min = fenge(ch, ":", 1).toInt();
+            wat_begin_hour = fenge(ch, "v", 0).toInt();
+            wat_begin_min = fenge(ch, "v", 1).toInt();
         }
         else if (ch.toInt() < 5 && ch.toInt() >= 1) //如果是数字的话，就开启的debug模式
         {
@@ -693,6 +705,8 @@ void loop()
                 reboot_flag = doc["restart"];
                 if (reboot_flag == 1)
                 {
+                    solenoid_line=-1;
+                    send2clinet();
                     ESP.restart();
                 }
             }
@@ -706,11 +720,28 @@ void loop()
     ////         time_flag = millis();
     ////         work_times = 3;
     ////     }
-    Serial.print("out");
-    Serial.print(pump_working_flag);
+    Serial.println("******************");
+    Serial.print("pump_working_flag:");
+    Serial.println(pump_working_flag);
+    Serial.print("time2go():");
+    Serial.println(time2go());
+    Serial.print("soil_go():");
+    Serial.println(soil_go());
+    Serial.print("auto_watering_flag:");
+    Serial.println(auto_watering_flag);
+    Serial.print("hand_watering_flag:");
+    Serial.println(hand_watering_flag);
+    Serial.println("******************");
+
+
+
+
     if (0 == carwash_flag)
     {
-        if (((time2go() || soil_go()) && 1 == auto_watering_flag) || 1 == hand_watering_flag) // fixme:time2go可能需要再大一点；1.算好delay和time2go;2.做一个每天几次，或者上下午几次的东西
+        time_to_go_flag=time2go();
+        soil_to_go_flag=soil_go();
+        if (((time_to_go_flag || soil_to_go_flag) && (1 == auto_watering_flag)) || 1 == hand_watering_flag)
+         // fixme:time2go可能需要再大一点；1.算好delay和time2go;2.做一个每天几次，或者上下午几次的东西
         //这里如果auto_watering_flag==1在前面,当其为0的时候time2go()和soil_go()不会执行了,所以应该放在后面
         {
             // if(1==hand_watering_flag && auto_watering_flag==1){
@@ -723,6 +754,7 @@ void loop()
             {
                 if (work_times > 0)
                 {
+                    soil2wat=1;//代表此刻正在浇水
                     for (i = 0; i < length(working_solenoid_valve); i++)
                     {
 
@@ -741,10 +773,14 @@ void loop()
                 
                 Serial.print("和开始的时间相差分钟数:");
                 Serial.println(time_gap(timeinfo, start_work_time));
-                if ((time_gap(timeinfo, start_work_time)) * 60000 > delaytime * (4 - work_times)) // 1秒 = 1000 毫秒,感觉还是大于比较好
+                time_gap_min=time_gap(timeinfo, start_work_time) ;
+                if (time_gap_min > delaytime) // 1秒 = 1000 毫秒,感觉还是大于比较好
                 {                                                                               ////这里是不是没有做减法?建议调试之后再操作这里
 
                     work_times = work_times - 1;
+                    Serial.println("worktimes-1了");
+                    start_work_time=timeinfo;
+                    
                 }
                 Serial.print("在浇倒数第几轮:");
                 Serial.println(work_times);
@@ -752,6 +788,7 @@ void loop()
                 {
                     shut_all();
                     hand_watering_flag = 0;
+                    Serial.println("worktime等于0了");
                 }
             }
         }
@@ -762,11 +799,15 @@ void loop()
         {
             shut_all();
             carwash_flag = 0;
+            
         }
     }
     check_soil(); //?也许不写在这里?写在一开始就检测湿度的地方?
+    delay(100);
     get_localtime();
+    delay(100);
     flag_execute();
+    delay(100);
     send2clinet();
     delay(1000); // don't flood remote service
     //不要用mills代替，否则感觉让他休息的目的都达不到了，就是要阻塞在这里起

@@ -88,6 +88,10 @@ unsigned long BEGIN_TIMESTAMP = 0; // 处理millis的返回时间,起点
 bool NET_LOSTING_FLAG = false;
 bool time_to_go_flag = false;
 bool soil_to_go_flag = false;
+unsigned long wifiReconnectTimer = 0;
+unsigned long clientReconnectTimer = 0;
+const unsigned long wifiRetryInterval = 300;  // WiFi 连接重试间隔（毫秒）
+const unsigned long clientRetryInterval = 500; // 服务器连接重试间隔（毫秒）
 int time_gap_min = 0;   //浇水的时间是否已经达到要求？
 // const char *device_id = "R6P6K29X5PW1L607";// fixme:这个是测试组
 const char *device_id = "DWP0009W6WGF381Y";
@@ -234,75 +238,75 @@ void send2clinet()
     client.print(data);
     // delay(2000);
 }
-void wifi_reconnect_cx()
-{
-    wifi_retry_times = 0;
-    while (WiFi.status() != WL_CONNECTED)
-    {
-        wifi_retry_times += 1;
-        if (wifi_retry_times >= 0 && wifi_retry_times < 150)
-        {
-            // WiFi.begin(ssid, password);
+// **非阻塞WiFi重连**
+void wifi_reconnect_cx() {
+    static unsigned long lastAttemptTime = 0; 
+
+    if (WiFi.status() == WL_CONNECTED) {
+        wifi_retry_times = 0;
+        NET_LOSTING_FLAG = false;
+        return;
+    }
+
+    // 只有当超过设定时间间隔时才尝试连接
+    if (millis() - lastAttemptTime >= wifiRetryInterval) {
+        lastAttemptTime = millis();
+        wifi_retry_times++;
+
+        if (wifi_retry_times < 150) {
             Serial.print(".");
-        }
-        else
-        {
-            if (soil2wat == 1)
-            {
+            // WiFi.begin(ssid, password); // 如果需要，可在此重新尝试连接WiFi
+        } else {
+            if (soil2wat == 1) {
                 Serial.println("使用millis()进行猜测时间");
                 NET_LOSTING_FLAG = true;
                 NET_LOSTING_time = timeinfo;
-                BEGIN_TIMESTAMP = millis(); // 在此处设置了时间断点
-                break;
-            }
-            else
-            {
-                wifi_to_reboot_times += 1;
-                if (wifi_to_reboot_times > 500)
-                { // wifi实在是断开太久了
+                BEGIN_TIMESTAMP = millis(); // 记录断网时间
+            } else {
+                wifi_to_reboot_times++;
+                if (wifi_to_reboot_times > 500) {
                     Serial.println("准备重启");
                     ESP.restart();
                 }
-                break;
             }
         }
-        delay(300);
-    }
-    if (WiFi.status() != WL_CONNECTED)
-    {
-        NET_LOSTING_FLAG = false;
     }
 }
-void check_client_connected() // 检测与tlink服务器的连接状态
-{
-    wifi_retry_times = 0;
-    while (!client.connected() && WiFi.status() == WL_CONNECTED)
-    {
-        Serial.println("prepare to reconnect...");
+
+// **非阻塞检测客户端（tlink服务器）连接**
+void check_client_connected() {
+    static unsigned long lastAttemptTime = 0; 
+
+    if (client.connected() || WiFi.status() != WL_CONNECTED) {
+        wifi_to_reboot_times = 0;
+        return;
+    }
+
+    // 只有当超过设定时间间隔时才尝试连接服务器
+    if (millis() - lastAttemptTime >= clientRetryInterval) {
+        lastAttemptTime = millis();
+        wifi_retry_times++;
+
+        Serial.println("尝试重新连接服务器...");
         client.connect(host, httpPort);
-        if (client.connected())
-        {
-            Serial.println("send device_id");
-            client.print(device_id); /*指定设备id*/
-                                     // 这个函数指的不是print，而是发送！
+
+        if (client.connected()) {
+            Serial.println("发送设备ID");
+            client.print(device_id);
         }
-        delay(500);
-        if (wifi_retry_times > 20)
-        { // 次数太多就break蒜了
+
+        if (wifi_retry_times > 20) {
             wifi_retry_times = 0;
-            break;
         }
     }
-    if (!client.connected())
-    {
-        wifi_to_reboot_times += 1;
-        if (wifi_to_reboot_times > 500)
-        { // wifi实在是断开太久了
+
+    if (!client.connected()) {
+        wifi_to_reboot_times++;
+        if (wifi_to_reboot_times > 500) {
             Serial.println("准备重启");
             ESP.restart();
         }
     }
-    // Serial.println("connection sucess!");
 }
 
 void pump_work()
@@ -399,37 +403,28 @@ void time_by_millis(unsigned long millis_second)
     }
 }
 
-bool get_localtime()
-{
-    if (NET_LOSTING_FLAG)
-    { // 代表现在网络断开了,要通过millis()做一个我们模拟出来的时间
-        // 但是每次都要从被丢失的那个时间开始模拟,防止每次计算时间误差过大!!!
-        if (millis() - BEGIN_TIMESTAMP > 1000)
-        {
-            time_by_millis((millis() - BEGIN_TIMESTAMP));
-        } // 已经过去了多少毫秒
-        Serial.print("this is net_losting_time");
-        sprintf(time_temp, "%d:%d:%d", timeinfo.tm_hour, timeinfo.tm_min, timeinfo.tm_sec);
-        time_status = String(time_temp);
-        Serial.println(time_status);
-    }
-    wifi_retry_times = 0;
-    while (!getLocalTime(&timeinfo))
-    {
-        wifi_retry_times += 1;
-        time_status = "Failed";
-        Serial.println("Failed to obtain time");
-        delay(300);
-        if (wifi_retry_times >= 20)
-        {
-            break;
+// DeepSeek:修改 get_localtime 函数
+bool get_localtime() {
+    if (!getLocalTime(&timeinfo)) { // 尝试获取网络时间失败
+        if (!NET_LOSTING_FLAG) { // 首次进入断网状态
+            NET_LOSTING_FLAG = true;
+            NET_LOSTING_time = timeinfo; // 记录断网时的准确时间
+            BEGIN_TIMESTAMP = millis(); // 记录断网时刻的 millis()
         }
+        // 使用 millis() 推算当前时间
+        unsigned long elapsed = millis() - BEGIN_TIMESTAMP;
+        timeinfo = NET_LOSTING_time;
+        timeinfo.tm_sec += elapsed / 1000;
+        
+        // 规范化时间结构
+        mktime(&timeinfo); // 自动处理溢出（如秒转分钟等）
+    } else {
+        NET_LOSTING_FLAG = false; // 网络恢复
     }
-
-    sprintf(time_temp, "%d:%d", timeinfo.tm_hour, timeinfo.tm_min);
+    
+    // 更新状态显示
+    sprintf(time_temp, "%02d:%02d", timeinfo.tm_hour, timeinfo.tm_min);
     time_status = String(time_temp);
-    Serial.println(time_status);
-
     return true;
 }
 
@@ -676,57 +671,57 @@ bool lower_noise(int pin_to_listen, int pin_status_wanted)
         return false;
     }
 }
+//关闭此功能
+// void physical_listener()
+// { // 指对现实世界的开关动作进行追踪+降低噪音
+//     // trigger_pin_status = digitalRead(car_wash_trigger_pin);
+//     Serial.print("carwash电平");
+//     // Serial.println(trigger_pin_status);
 
-void physical_listener()
-{ // 指对现实世界的开关动作进行追踪+降低噪音
-    // trigger_pin_status = digitalRead(car_wash_trigger_pin);
-    Serial.print("carwash电平");
-    // Serial.println(trigger_pin_status);
+//     if (lower_noise(car_wash_trigger_pin, HIGH))
+//     {
+//         Serial.println("高电平洗车启动");
+//         shut_all();
+//         carwash_flag = 1;
+//         Serial.print("carwash_flag=");
+//         Serial.println(carwash_flag);
+//         Solenoid_OffAll(0);    // 无论如何，都把所有的都给关上
+//         pump_working_flag = 1; // do not use 'delay'
+//         // carwash应该启动的时候禁止使用别的浇水!
+//         start_work_time = timeinfo;
+//     }
 
-    if (lower_noise(car_wash_trigger_pin, HIGH))
-    {
-        Serial.println("高电平洗车启动");
-        shut_all();
-        carwash_flag = 1;
-        Serial.print("carwash_flag=");
-        Serial.println(carwash_flag);
-        Solenoid_OffAll(0);    // 无论如何，都把所有的都给关上
-        pump_working_flag = 1; // do not use 'delay'
-        // carwash应该启动的时候禁止使用别的浇水!
-        start_work_time = timeinfo;
-    }
+//     // trigger_pin_status = digitalRead(hand_water_trigger_pin);
+//     Serial.print("手动浇水电平");
+//     // Serial.println(trigger_pin_status);
+//     if (lower_noise(hand_water_trigger_pin, HIGH))
+//     {
+//         shut_all();
+//         pump_working_flag = 1;
+//         hand_watering_flag = 1;
+//         start_work_time = timeinfo;
+//         work_times = 7;
+//     }
+//     // //这里的代码在没有得到田里的参数时候不能测,会有问题
+//     // //是否在执行层,只对pin的好低电平进行检测,而代表flag
 
-    // trigger_pin_status = digitalRead(hand_water_trigger_pin);
-    Serial.print("手动浇水电平");
-    // Serial.println(trigger_pin_status);
-    if (lower_noise(hand_water_trigger_pin, HIGH))
-    {
-        shut_all();
-        pump_working_flag = 1;
-        hand_watering_flag = 1;
-        start_work_time = timeinfo;
-        work_times = 7;
-    }
-    // //这里的代码在没有得到田里的参数时候不能测,会有问题
-    // //是否在执行层,只对pin的好低电平进行检测,而代表flag
-
-    Serial.print("菜地电平");
-    if (lower_noise(vegetable_knob_pin, HIGH))
-    { // 由于input_pullup的出现,导致了相关行为的反转!!!
-        vegetable_flag_hand = 1;
-        pump_working_flag = 1; // 打开泵,记录flag
-        Solenoid_OffAll(7);
-        start_work_time = timeinfo;
-    }
-    else
-    {
-        if (1 == vegetable_flag_hand)
-        {
-            shut_all();
-        }
-        vegetable_flag_hand = 0;
-    }
-}
+//     Serial.print("菜地电平");
+//     if (lower_noise(vegetable_knob_pin, HIGH))
+//     { // 由于input_pullup的出现,导致了相关行为的反转!!!
+//         vegetable_flag_hand = 1;
+//         pump_working_flag = 1; // 打开泵,记录flag
+//         Solenoid_OffAll(7);
+//         start_work_time = timeinfo;
+//     }
+//     else
+//     {
+//         if (1 == vegetable_flag_hand)
+//         {
+//             shut_all();
+//         }
+//         vegetable_flag_hand = 0;
+//     }
+// }
 
 
 void setup()
@@ -1058,10 +1053,10 @@ void loop()
     ////         time_flag = millis();
     ////         work_times = 3;
     ////     }
-    if(physical_buttons)
-    {
-    physical_listener(); // 对现在的按钮进行监听！！！
-    }
+    // if(physical_buttons)
+    // {
+    // physical_listener(); // 对现在的按钮进行监听！！！
+    // }
 
     Serial.println("******************");
     Serial.print("pump_working_flag:");

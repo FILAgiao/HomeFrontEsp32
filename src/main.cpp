@@ -38,8 +38,10 @@ WiFiClient client;
 struct tm timeinfo;
 struct tm NET_LOSTING_time;
 struct tm start_work_time;
-int Solenoid_Pin[7] = {13, 27, 26, 25, 33, 19, 32};  // 电磁阀使用的引脚,19\32代表菜地和最外面,有些是否浇菜地\北边围墙在后面的loop\send2client中做了index的强关联,如果此数组变化了,也要修改一下   
-int pin_watering_time[7] = {20, 20, 20, 20, 20,5, 10}; // 每个引脚浇水的时间
+int Solenoid_Pin[8] = {13, 27, 26, 25, 33,21, 19, 32};  // 电磁阀使用的引脚,19\32代表菜地和最外面,有些是否浇菜地\北边围墙在后面的loop\send2client中做了index的强关联,如果此数组变化了,也要修改一下   
+int pin_watering_time[8] = {20, 20, 20, 20, 20,20, 20,20}; // 每个引脚浇水的时间
+int working_solenoid_valve[8] = {0, 0, 0, 0, 0, 0,0,0};   //增加电磁阀记得修改数组长度!!!!
+
 int Pump_pin = 18;                                   // 水泵使用的引脚
 int auto_soil_watering_flag = 1;                     // 到达一定湿度再浇水的flag
 int auto_timing_watering_flag = 0;                   // 按照时间进行浇水的引脚
@@ -55,8 +57,7 @@ int pump_working_flag = 0;
 int vegetable_flag_hand = 0;
 int vegetable_flag_net = 0;
 int pool_watering_flag=0;
-int working_solenoid_valve[7] = {0, 0, 0, 0, 0, 0,0};   //增加电磁阀记得修改数组长度!!!!
-int car_wash_trigger_pin = 21;   // 手动洗车开关
+// int car_wash_trigger_pin = 21;   // 手动洗车开关
 int hand_water_trigger_pin = 22; // 手动浇水开关
 int vegetable_knob_pin = 23;     // 菜地旋钮
 // volatile int solenoid_valve4 = 0;
@@ -67,7 +68,7 @@ String time_status = "";
 int solenoid_line = 0;
 // volatile int which2debug_num = 0; //正在debug的电磁阀的序号,可能不需要这个变量了
 float soil_moisture = 0;
-float soil_moisture_need = 28; // 最低土壤湿度
+float soil_moisture_need = 30.5; // 最低土壤湿度
 // float soil_moisture_history_avg;
 int soil_moisture_test_maxsize = 777; // 这个数值不能太大,否则会导致一次太干,但是浇完水还是没啥反应.
 int soil_moisture_list_size = 0;
@@ -219,12 +220,12 @@ void send2clinet()
     {
         time_status = ota_feedback; // 如果有在更新，则收到的升级反馈会显示在物联网平台中的时间框框
     }
-    if(pin_watering_time[6]>0){      //这里也要修改引脚!!!
+    if(pin_watering_time[length(working_solenoid_valve)-1]>0){      //这里也要修改引脚!!!
         field_t=1;
     }else{
         field_t=0;
     }
-    if(pin_watering_time[4]>0){
+    if(pin_watering_time[length(working_solenoid_valve)-3]>0){
         corner_t=1;
     }
     else{
@@ -382,52 +383,71 @@ bool time_plus_check(int wat_begin_hour, int wat_begin_min, tm timeinfo)
     }
 }
 
-void time_by_millis(unsigned long millis_second)
-{ // 通过millis()函数估计时间
-    timeinfo = NET_LOSTING_time;
-    // 时间转化为秒
-    timeinfo.tm_sec += millis_second / 1000;
-    if (timeinfo.tm_sec >= 60)
+void time_by_millis(unsigned long millis_elapsed)
+{
+  // 保留原始时间的副本，避免直接改动全局结构体
+  struct tm temp_time = NET_LOSTING_time;
+
+  // 计算经过的时间（秒 + 毫秒）
+  unsigned long seconds = millis_elapsed / 1000;
+  unsigned long milliseconds_remainder = millis_elapsed % 1000;
+
+  // 加上经过的秒数
+  temp_time.tm_sec += seconds;
+
+  // 统一进位：秒 → 分钟 → 小时
+  temp_time.tm_min += temp_time.tm_sec / 60;
+  temp_time.tm_sec %= 60;
+
+  temp_time.tm_hour += temp_time.tm_min / 60;
+  temp_time.tm_min %= 60;
+
+  // ⚠️ 如果你要支持超过24小时，建议考虑 tm_yday 或 tm_mday
+  temp_time.tm_hour %= 24;
+
+  // 更新全局时间
+  timeinfo = temp_time;
+
+  // 可选：如果你后续想加入亚秒级显示，也可以保存这个 remainder
+  // last_millis_remainder = milliseconds_remainder;
+}
+//尝试使用一下这个非阻塞版本的get_localtime
+bool get_localtime()
+{
+  if (NET_LOSTING_FLAG)
+  {
+    // 使用模拟时间
+    unsigned long elapsed = millis() - BEGIN_TIMESTAMP;
+    Serial.println("this is elapsed: " + elapsed);
+    if (elapsed >  1000)  // 每分钟模拟一次（减误差）
     {
-        timeinfo.tm_min += 1;
-        timeinfo.tm_sec -= 60;
-        if (timeinfo.tm_min >= 60)
-        {
-            timeinfo.tm_hour += 1;
-            timeinfo.tm_min -= 60;
-            if (timeinfo.tm_hour >= 24)
-            {
-                timeinfo.tm_hour = 0;
-            }
-        }
+      time_by_millis(elapsed);
     }
-}
 
-// DeepSeek:修改 get_localtime 函数
-bool get_localtime() {
-    if (!getLocalTime(&timeinfo)) { // 尝试获取网络时间失败
-        if (!NET_LOSTING_FLAG) { // 首次进入断网状态
-            NET_LOSTING_FLAG = true;
-            NET_LOSTING_time = timeinfo; // 记录断网时的准确时间
-            BEGIN_TIMESTAMP = millis(); // 记录断网时刻的 millis()
-        }
-        // 使用 millis() 推算当前时间
-        unsigned long elapsed = millis() - BEGIN_TIMESTAMP;
-        timeinfo = NET_LOSTING_time;
-        timeinfo.tm_sec += elapsed / 1000;
-        
-        // 规范化时间结构
-        mktime(&timeinfo); // 自动处理溢出（如秒转分钟等）
-    } else {
-        NET_LOSTING_FLAG = false; // 网络恢复
-    }
-    
-    // 更新状态显示
-    sprintf(time_temp, "%02d:%02d", timeinfo.tm_hour, timeinfo.tm_min);
+    sprintf(time_temp, "%02d:%02d:%02d", timeinfo.tm_hour, timeinfo.tm_min, timeinfo.tm_sec);
     time_status = String(time_temp);
+    Serial.println("***************");
+    Serial.println("this is net_losting_time: " + time_status);
+    Serial.println("***************");
     return true;
-}
+  }
 
+  // 网络状态正常，尝试获取网络时间
+  bool got_time = getLocalTime(&timeinfo);  // 这本身就是非阻塞的调用
+
+  if (!got_time)
+  {
+    time_status = "Failed";
+    Serial.println("Failed to obtain time");
+    return false;
+  }
+
+  sprintf(time_temp, "%02d:%02d:%02d", timeinfo.tm_hour, timeinfo.tm_min, timeinfo.tm_sec);
+  time_status = String(time_temp);
+  Serial.println("Synced time: " + time_status);
+
+  return true;
+}
 // bool get_starttime(){
 
 // }
@@ -454,7 +474,7 @@ bool time2go()
                     if (soil2wat == 0)
                     {
                         start_work_time = timeinfo;
-                        work_times = 7;
+                        work_times = length(Solenoid_Pin);
                         soil2wat = 1;
                     }
                     return true;
@@ -593,7 +613,7 @@ bool soil_go()
         // *time_flag = millis();
         if (soil2wat == 0)
         {
-            work_times = 7;
+            work_times = length(Solenoid_Pin);
             soil2wat = 1;
             start_work_time = timeinfo;
         }
@@ -871,7 +891,7 @@ void loop()
             wat_begin_hour = fenge(ch, "v", 0).toInt();
             wat_begin_min = fenge(ch, "v", 1).toInt();
         }
-        else if (ch.toInt() <= 7 && ch.toInt() >= 1) // 如果是数字的话，就开启的debug模式
+        else if (ch.toInt() <= length(Solenoid_Pin) && ch.toInt() >= 1) // 如果是数字的话，就开启的debug模式
         {
             Serial.println("which pump check\n");
             pump_working_flag = 1; // 打开泵,记录flag
@@ -944,7 +964,7 @@ void loop()
                     pump_working_flag = 1;
                     // *time_flag = millis();
                     start_work_time = timeinfo;
-                    work_times = 7;
+                    work_times = length(Solenoid_Pin);
                 }
                 else
                 {
@@ -959,7 +979,8 @@ void loop()
                 {
                      shut_all();
                 pump_working_flag = 1;
-                working_solenoid_valve[6]=1; // 此时最后一个是代表田里的电磁阀
+                // fixme:如果这里是在浇花系统把"浇菜地"的关了,这里就算打开了时间也还是0,修复!
+                working_solenoid_valve[length(working_solenoid_valve)-1]=1; // 此时最后一个是代表田里的电磁阀
                 // working_solenoid_valve[length(Solenoid_Pin) - 1] 不能这么用!
                     start_work_time = timeinfo;
                 }
@@ -975,7 +996,7 @@ void loop()
                 {
                      shut_all();
                     pump_working_flag = 1;
-                    working_solenoid_valve[5]=1; // 此时最后一个是代表田里的电磁阀
+                    working_solenoid_valve[length(working_solenoid_valve)-2]=1; // 此时最后一个是代表田里的电磁阀
                 // working_solenoid_valve[length(Solenoid_Pin) - 1] 不能这么用!
                     start_work_time = timeinfo;
                 }
@@ -987,21 +1008,21 @@ void loop()
             else if (doc.containsKey("field_2_wat"))            //如果数组中电磁阀又有变化,我就不再定义新变量了
             {
                 if(1==doc["field_2_wat"]){
-                pin_watering_time[6]=10;
+                pin_watering_time[length(working_solenoid_valve)-1]=10;
 
                 }
                 else if(0==doc["field_2_wat"]){
-                    pin_watering_time[6]=0;
+                    pin_watering_time[length(working_solenoid_valve)-1]=0;
                 }
             }
             else if (doc.containsKey("corner_2_wat"))
             {
                 if(1==doc["corner_2_wat"]){
-                pin_watering_time[4]=20;
+                pin_watering_time[length(working_solenoid_valve)-3]=20;
 
                 }
                 else if(0==doc["corner_2_wat"]){
-                    pin_watering_time[4]=0;
+                    pin_watering_time[length(working_solenoid_valve)-3]=0;
                 }
             }
 //取消此功能//////////////////
@@ -1096,7 +1117,7 @@ void loop()
                         working_solenoid_valve[i] = 0;
                     }
 
-                    working_solenoid_valve[7 - work_times] = 1; // 这里的先打开再关闭时无所谓的，因为只是一个flag，都在最后的地方可以操作
+                    working_solenoid_valve[length(Solenoid_Pin) - work_times] = 1; // 这里的先打开再关闭时无所谓的，因为只是一个flag，都在最后的地方可以操作
 
                     // Serial.println(work_times);
                     // Serial.println('else分界线');
@@ -1109,7 +1130,7 @@ void loop()
                 Serial.print("和开始的时间相差分钟数:");
                 Serial.println(time_gap(timeinfo, start_work_time));
                 time_gap_min = time_gap(timeinfo, start_work_time);
-                if (time_gap_min > pin_watering_time[7 - work_times])
+                if (time_gap_min > pin_watering_time[length(Solenoid_Pin) - work_times])
                 { ////这里是不是没有做减法?建议调试之后再操作这里
 
                     work_times = work_times - 1;

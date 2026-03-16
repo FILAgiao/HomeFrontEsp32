@@ -21,6 +21,10 @@ md 还是3个电磁阀好了。。。
 #include <Ticker.h>
 #include <String.h>
 #include <HTTPUpdate.h>
+#include <Preferences.h>
+
+// 数据存储对象
+Preferences preferences;
 
 // OTA升级的固件地址
 String upUrl = "http://bin.bemfa.com/b/3BcM2ZlOWE5NWI3NmIyNGY2Mzg2ODk2ZGZhMGM1YWIyYjU=test.bin";
@@ -110,6 +114,115 @@ int breakpoint_flag = 1; // 23333这个是控制断点的,不是time_flag
 char data[64];//回传的一大条数据都在里面，注意数据长度
 char time_temp[10];
 char set_begin_time[10];
+
+//****************************************************************以下是数据存储功能（断电数据保持）
+
+// 保存配置数据到Preferences
+void saveConfig() {
+    preferences.begin("irrigation", false);
+    
+    // 保存浇水时间配置
+    preferences.putBytes("pin_times", pin_watering_time, sizeof(pin_watering_time));
+    
+    // 保存开始时间
+    preferences.putUChar("wat_hour", wat_begin_hour);
+    preferences.putUChar("wat_min", wat_begin_min);
+    
+    // 保存湿度阈值
+    preferences.putFloat("soil_need", soil_moisture_need);
+    
+    // 保存自动浇水标志
+    preferences.putUChar("auto_soil", auto_soil_watering_flag);
+    preferences.putUChar("auto_time", auto_timing_watering_flag);
+    
+    preferences.end();
+    Serial.println("[Preferences] 配置数据已保存");
+}
+
+// 从Preferences加载配置数据
+void loadConfig() {
+    preferences.begin("irrigation", true);
+    
+    // 加载浇水时间配置
+    preferences.getBytes("pin_times", pin_watering_time, sizeof(pin_watering_time));
+    
+    // 加载开始时间（使用默认值如果不存在）
+    wat_begin_hour = preferences.getUChar("wat_hour", 4);
+    wat_begin_min = preferences.getUChar("wat_min", 40);
+    
+    // 加载湿度阈值
+    soil_moisture_need = preferences.getFloat("soil_need", 30.5);
+    
+    // 加载自动浇水标志
+    auto_soil_watering_flag = preferences.getUChar("auto_soil", 1);
+    auto_timing_watering_flag = preferences.getUChar("auto_time", 0);
+    
+    preferences.end();
+    Serial.println("[Preferences] 配置数据已加载");
+    Serial.printf("[Preferences] 开始时间: %d:%d, 湿度阈值: %.1f%%\n", 
+                  wat_begin_hour, wat_begin_min, soil_moisture_need);
+}
+
+// 保存运行状态到Preferences（在关键状态变化时调用）
+void saveState() {
+    preferences.begin("irrigation_state", false);
+    
+    // 保存电磁阀状态
+    preferences.putBytes("solenoid", working_solenoid_valve, sizeof(working_solenoid_valve));
+    
+    // 保存各种标志
+    preferences.putUChar("pump_flag", pump_working_flag);
+    preferences.putUChar("carwash", carwash_flag);
+    preferences.putUChar("hand", hand_watering_flag);
+    preferences.putUChar("veg_net", vegetable_flag_net);
+    preferences.putUChar("veg_hand", vegetable_flag_hand);
+    preferences.putUChar("pool", pool_watering_flag);
+    preferences.putUChar("solenoid", solenoid_line);
+    preferences.putUChar("work_times", work_times);
+    preferences.putUChar("soil2wat", soil2wat);
+    
+    preferences.end();
+    Serial.println("[Preferences] 运行状态已保存");
+}
+
+// 从Preferences加载运行状态
+void loadState() {
+    preferences.begin("irrigation_state", true);
+    
+    // 加载电磁阀状态
+    preferences.getBytes("solenoid", working_solenoid_valve, sizeof(working_solenoid_valve));
+    
+    // 加载各种标志
+    pump_working_flag = preferences.getUChar("pump_flag", 0);
+    carwash_flag = preferences.getUChar("carwash", 0);
+    hand_watering_flag = preferences.getUChar("hand", 0);
+    vegetable_flag_net = preferences.getUChar("veg_net", 0);
+    vegetable_flag_hand = preferences.getUChar("veg_hand", 0);
+    pool_watering_flag = preferences.getUChar("pool", 0);
+    solenoid_line = preferences.getUChar("solenoid", 0);
+    work_times = preferences.getUChar("work_times", 0);
+    soil2wat = preferences.getUChar("soil2wat", 0);
+    
+    preferences.end();
+    Serial.println("[Preferences] 运行状态已加载");
+    
+    // 如果有正在进行的灌溉任务，打印提示
+    if (pump_working_flag == 1 || work_times > 0) {
+        Serial.println("[Preferences] 检测到未完成的灌溉任务，尝试恢复...");
+    }
+}
+
+// 清除所有存储的数据（用于重置）
+void clearAllData() {
+    preferences.begin("irrigation", false);
+    preferences.clear();
+    preferences.end();
+    preferences.begin("irrigation_state", false);
+    preferences.clear();
+    preferences.end();
+    Serial.println("[Preferences] 所有数据已清除");
+}
+
 //****************************************************************以下是OTA远程升级代码
 // 当升级开始时，打印日志
 void update_started()
@@ -749,6 +862,14 @@ void setup()
     // put your setup code here, to run once:
     tempSerial.begin(4800);
     Serial.begin(9600);
+    
+    // 加载存储的配置和状态数据
+    Serial.println("\n========================================");
+    Serial.println("[Preferences] 加载存储的数据...");
+    loadConfig();
+    loadState();
+    Serial.println("========================================");
+    
     configTime(8 * 3600, 0, "ntp1.aliyun.com", "ntp2.aliyun.com");
     // configTime(gmtOffset_sec, daylightOffset_sec, ntpServer);
     delay(10);
@@ -875,6 +996,7 @@ void loop()
         { // 读取你所需要的最低湿度
             Serial.println("lowest wet check\n");
             soil_moisture_need = ch.substring(0, ch.length() - 1).toFloat();
+            saveConfig(); // 保存配置
         }
         else if (ch.lastIndexOf('x') != -1)
         { //! 读取你所需要的最少时间,小心字母重复!
@@ -884,12 +1006,14 @@ void loop()
             { // 只修改数组的前几个，不修改最后一个代表浇菜的引脚
                 pin_watering_time[i] = ch.substring(0, ch.length() - 1).toInt();
             }
+            saveConfig(); // 保存配置
         }
         else if (ch.lastIndexOf('v') != -1)
         { // 应当输入5v31
             Serial.println("began time check\n");
             wat_begin_hour = fenge(ch, "v", 0).toInt();
             wat_begin_min = fenge(ch, "v", 1).toInt();
+            saveConfig(); // 保存配置
         }
         else if (ch.toInt() <= length(Solenoid_Pin) && ch.toInt() >= 1) // 如果是数字的话，就开启的debug模式
         {
@@ -933,6 +1057,7 @@ void loop()
                     carwash_flag = 0;
                     shut_all();
                 }
+                saveState(); // 保存状态
 
                 /////////////////////////////////////////
             }
@@ -943,6 +1068,7 @@ void loop()
                 {
                     shut_all();
                 }
+                saveConfig(); // 保存配置
             }
             else if (doc.containsKey("auto_timing"))
             {
@@ -951,6 +1077,7 @@ void loop()
                 {
                     shut_all();
                 }
+                saveConfig(); // 保存配置
             }
             else if (doc.containsKey("hand"))
             {
@@ -970,6 +1097,7 @@ void loop()
                 {
                     shut_all();
                 }
+                saveState(); // 保存状态
             }
             else if (doc.containsKey("field"))
             { // 此代表菜地,所选择的英文单词中不能包含字母x或者v
@@ -988,6 +1116,7 @@ void loop()
                 {
                     shut_all();
                 }
+                saveState(); // 保存状态
             }
             else if (doc.containsKey("pool_2_wat"))            //如果数组中电磁阀又有变化,我就不再定义新变量了
             { 
@@ -1004,6 +1133,7 @@ void loop()
                 {
                     shut_all();
                 }
+                saveState(); // 保存状态
             }
             else if (doc.containsKey("field_2_wat"))            //如果数组中电磁阀又有变化,我就不再定义新变量了
             {
@@ -1014,6 +1144,7 @@ void loop()
                 else if(0==doc["field_2_wat"]){
                     pin_watering_time[length(working_solenoid_valve)-1]=0;
                 }
+                saveConfig(); // 保存配置
             }
             else if (doc.containsKey("corner_2_wat"))
             {
@@ -1024,6 +1155,7 @@ void loop()
                 else if(0==doc["corner_2_wat"]){
                     pin_watering_time[length(working_solenoid_valve)-3]=0;
                 }
+                saveConfig(); // 保存配置
             }
 //取消此功能//////////////////
             // else if (doc.containsKey("physical_buttons"))
@@ -1047,6 +1179,7 @@ void loop()
             else if (doc.containsKey("shut"))
             {
                 shut_all();
+                saveState(); // 保存状态
             }
             else if (doc.containsKey("ota_upload"))
             {

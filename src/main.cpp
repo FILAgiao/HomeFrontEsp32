@@ -21,10 +21,6 @@ md 还是3个电磁阀好了。。。
 #include <Ticker.h>
 #include <String.h>
 #include <HTTPUpdate.h>
-#include <Preferences.h>
-
-// 数据存储对象
-Preferences preferences;
 
 // OTA升级的固件地址
 String upUrl = "http://bin.bemfa.com/b/3BcM2ZlOWE5NWI3NmIyNGY2Mzg2ODk2ZGZhMGM1YWIyYjU=test.bin";
@@ -42,9 +38,9 @@ WiFiClient client;
 struct tm timeinfo;
 struct tm NET_LOSTING_time;
 struct tm start_work_time;
-int Solenoid_Pin[8] = {13, 27, 26, 25, 33,21, 19, 32};  // 电磁阀使用的引脚,19\32代表菜地和最外面,有些是否浇菜地\北边围墙在后面的loop\send2client中做了index的强关联,如果此数组变化了,也要修改一下   
-int pin_watering_time[8] = {20, 20, 20, 20, 20,20, 20,20}; // 每个引脚浇水的时间
-int working_solenoid_valve[8] = {0, 0, 0, 0, 0, 0,0,0};   //增加电磁阀记得修改数组长度!!!!
+int Solenoid_Pin[9] = {13, 27, 26, 25, 33,21, 14, 19, 32};  // 14为测试脚(倒数第3个);19\32代表菜地和最外面,loop/send2client对index有强关联,改数组需同步改   
+int pin_watering_time[9] = {20, 20, 20, 20, 20,20, 20,20, 20}; // 每个引脚浇水的时间
+int working_solenoid_valve[9] = {0, 0, 0, 0, 0, 0,0,0, 0};   //增加电磁阀记得修改数组长度!!!!
 
 int Pump_pin = 18;                                   // 水泵使用的引脚
 int auto_soil_watering_flag = 1;                     // 到达一定湿度再浇水的flag
@@ -114,115 +110,6 @@ int breakpoint_flag = 1; // 23333这个是控制断点的,不是time_flag
 char data[64];//回传的一大条数据都在里面，注意数据长度
 char time_temp[10];
 char set_begin_time[10];
-
-//****************************************************************以下是数据存储功能（断电数据保持）
-
-// 保存配置数据到Preferences
-void saveConfig() {
-    preferences.begin("irrigation", false);
-    
-    // 保存浇水时间配置
-    preferences.putBytes("pin_times", pin_watering_time, sizeof(pin_watering_time));
-    
-    // 保存开始时间
-    preferences.putUChar("wat_hour", wat_begin_hour);
-    preferences.putUChar("wat_min", wat_begin_min);
-    
-    // 保存湿度阈值
-    preferences.putFloat("soil_need", soil_moisture_need);
-    
-    // 保存自动浇水标志
-    preferences.putUChar("auto_soil", auto_soil_watering_flag);
-    preferences.putUChar("auto_time", auto_timing_watering_flag);
-    
-    preferences.end();
-    Serial.println("[Preferences] 配置数据已保存");
-}
-
-// 从Preferences加载配置数据
-void loadConfig() {
-    preferences.begin("irrigation", true);
-    
-    // 加载浇水时间配置
-    preferences.getBytes("pin_times", pin_watering_time, sizeof(pin_watering_time));
-    
-    // 加载开始时间（使用默认值如果不存在）
-    wat_begin_hour = preferences.getUChar("wat_hour", 4);
-    wat_begin_min = preferences.getUChar("wat_min", 40);
-    
-    // 加载湿度阈值
-    soil_moisture_need = preferences.getFloat("soil_need", 30.5);
-    
-    // 加载自动浇水标志
-    auto_soil_watering_flag = preferences.getUChar("auto_soil", 1);
-    auto_timing_watering_flag = preferences.getUChar("auto_time", 0);
-    
-    preferences.end();
-    Serial.println("[Preferences] 配置数据已加载");
-    Serial.printf("[Preferences] 开始时间: %d:%d, 湿度阈值: %.1f%%\n", 
-                  wat_begin_hour, wat_begin_min, soil_moisture_need);
-}
-
-// 保存运行状态到Preferences（在关键状态变化时调用）
-void saveState() {
-    preferences.begin("irrigation_state", false);
-    
-    // 保存电磁阀状态
-    preferences.putBytes("solenoid", working_solenoid_valve, sizeof(working_solenoid_valve));
-    
-    // 保存各种标志
-    preferences.putUChar("pump_flag", pump_working_flag);
-    preferences.putUChar("carwash", carwash_flag);
-    preferences.putUChar("hand", hand_watering_flag);
-    preferences.putUChar("veg_net", vegetable_flag_net);
-    preferences.putUChar("veg_hand", vegetable_flag_hand);
-    preferences.putUChar("pool", pool_watering_flag);
-    preferences.putUChar("solenoid", solenoid_line);
-    preferences.putUChar("work_times", work_times);
-    preferences.putUChar("soil2wat", soil2wat);
-    
-    preferences.end();
-    Serial.println("[Preferences] 运行状态已保存");
-}
-
-// 从Preferences加载运行状态
-void loadState() {
-    preferences.begin("irrigation_state", true);
-    
-    // 加载电磁阀状态
-    preferences.getBytes("solenoid", working_solenoid_valve, sizeof(working_solenoid_valve));
-    
-    // 加载各种标志
-    pump_working_flag = preferences.getUChar("pump_flag", 0);
-    carwash_flag = preferences.getUChar("carwash", 0);
-    hand_watering_flag = preferences.getUChar("hand", 0);
-    vegetable_flag_net = preferences.getUChar("veg_net", 0);
-    vegetable_flag_hand = preferences.getUChar("veg_hand", 0);
-    pool_watering_flag = preferences.getUChar("pool", 0);
-    solenoid_line = preferences.getUChar("solenoid", 0);
-    work_times = preferences.getUChar("work_times", 0);
-    soil2wat = preferences.getUChar("soil2wat", 0);
-    
-    preferences.end();
-    Serial.println("[Preferences] 运行状态已加载");
-    
-    // 如果有正在进行的灌溉任务，打印提示
-    if (pump_working_flag == 1 || work_times > 0) {
-        Serial.println("[Preferences] 检测到未完成的灌溉任务，尝试恢复...");
-    }
-}
-
-// 清除所有存储的数据（用于重置）
-void clearAllData() {
-    preferences.begin("irrigation", false);
-    preferences.clear();
-    preferences.end();
-    preferences.begin("irrigation_state", false);
-    preferences.clear();
-    preferences.end();
-    Serial.println("[Preferences] 所有数据已清除");
-}
-
 //****************************************************************以下是OTA远程升级代码
 // 当升级开始时，打印日志
 void update_started()
@@ -862,14 +749,6 @@ void setup()
     // put your setup code here, to run once:
     tempSerial.begin(4800);
     Serial.begin(9600);
-    
-    // 加载存储的配置和状态数据
-    Serial.println("\n========================================");
-    Serial.println("[Preferences] 加载存储的数据...");
-    loadConfig();
-    loadState();
-    Serial.println("========================================");
-    
     configTime(8 * 3600, 0, "ntp1.aliyun.com", "ntp2.aliyun.com");
     // configTime(gmtOffset_sec, daylightOffset_sec, ntpServer);
     delay(10);
@@ -996,7 +875,6 @@ void loop()
         { // 读取你所需要的最低湿度
             Serial.println("lowest wet check\n");
             soil_moisture_need = ch.substring(0, ch.length() - 1).toFloat();
-            saveConfig(); // 保存配置
         }
         else if (ch.lastIndexOf('x') != -1)
         { //! 读取你所需要的最少时间,小心字母重复!
@@ -1006,25 +884,23 @@ void loop()
             { // 只修改数组的前几个，不修改最后一个代表浇菜的引脚
                 pin_watering_time[i] = ch.substring(0, ch.length() - 1).toInt();
             }
-            saveConfig(); // 保存配置
         }
         else if (ch.lastIndexOf('v') != -1)
         { // 应当输入5v31
             Serial.println("began time check\n");
             wat_begin_hour = fenge(ch, "v", 0).toInt();
             wat_begin_min = fenge(ch, "v", 1).toInt();
-            saveConfig(); // 保存配置
         }
         else if (ch.toInt() <= length(Solenoid_Pin) && ch.toInt() >= 1) // 如果是数字的话，就开启的debug模式
         {
             Serial.println("which pump check\n");
-            pump_working_flag = 1; // 打开泵,记录flag
-            Solenoid_OffAll(ch.toInt());
-            // Serial.print(working_solenoid_valve[0]);
-            // Serial.print(working_solenoid_valve[1]);
-            // Serial.println(working_solenoid_valve[2]);
-            // Serial.print("blo");
-            // Serial.print(pump_working_flag);
+            shut_all();                          // 先清理所有状态
+            pump_working_flag = 1;               // 打开泵,记录flag
+            int target_valve = ch.toInt();       // 用户指定的电磁阀编号(1~8)
+            Solenoid_OffAll(target_valve);       // 选中指定的电磁阀(index = target_valve - 1)
+            hand_watering_flag = 1;              // 覆盖Solenoid_OffAll里归零的hand标志,确保走手动浇水路径
+            work_times = length(Solenoid_Pin) - (target_valve - 1); // 从选中的阀开始循环到最后一个阀
+            start_work_time = timeinfo;          // 记录开始时间,用于后续计时关断
         } //
         // else if (0 == ch.toInt())
         // {
@@ -1057,7 +933,6 @@ void loop()
                     carwash_flag = 0;
                     shut_all();
                 }
-                saveState(); // 保存状态
 
                 /////////////////////////////////////////
             }
@@ -1068,7 +943,6 @@ void loop()
                 {
                     shut_all();
                 }
-                saveConfig(); // 保存配置
             }
             else if (doc.containsKey("auto_timing"))
             {
@@ -1077,7 +951,6 @@ void loop()
                 {
                     shut_all();
                 }
-                saveConfig(); // 保存配置
             }
             else if (doc.containsKey("hand"))
             {
@@ -1097,7 +970,6 @@ void loop()
                 {
                     shut_all();
                 }
-                saveState(); // 保存状态
             }
             else if (doc.containsKey("field"))
             { // 此代表菜地,所选择的英文单词中不能包含字母x或者v
@@ -1116,7 +988,6 @@ void loop()
                 {
                     shut_all();
                 }
-                saveState(); // 保存状态
             }
             else if (doc.containsKey("pool_2_wat"))            //如果数组中电磁阀又有变化,我就不再定义新变量了
             { 
@@ -1125,7 +996,7 @@ void loop()
                 {
                      shut_all();
                     pump_working_flag = 1;
-                    working_solenoid_valve[length(working_solenoid_valve)-2]=1; // 此时最后一个是代表田里的电磁阀
+                    working_solenoid_valve[length(working_solenoid_valve)-3]=1; // 此时最后一个是代表田里的电磁阀
                 // working_solenoid_valve[length(Solenoid_Pin) - 1] 不能这么用!
                     start_work_time = timeinfo;
                 }
@@ -1133,7 +1004,6 @@ void loop()
                 {
                     shut_all();
                 }
-                saveState(); // 保存状态
             }
             else if (doc.containsKey("field_2_wat"))            //如果数组中电磁阀又有变化,我就不再定义新变量了
             {
@@ -1144,7 +1014,6 @@ void loop()
                 else if(0==doc["field_2_wat"]){
                     pin_watering_time[length(working_solenoid_valve)-1]=0;
                 }
-                saveConfig(); // 保存配置
             }
             else if (doc.containsKey("corner_2_wat"))
             {
@@ -1155,7 +1024,6 @@ void loop()
                 else if(0==doc["corner_2_wat"]){
                     pin_watering_time[length(working_solenoid_valve)-3]=0;
                 }
-                saveConfig(); // 保存配置
             }
 //取消此功能//////////////////
             // else if (doc.containsKey("physical_buttons"))
@@ -1179,7 +1047,6 @@ void loop()
             else if (doc.containsKey("shut"))
             {
                 shut_all();
-                saveState(); // 保存状态
             }
             else if (doc.containsKey("ota_upload"))
             {
@@ -1225,7 +1092,7 @@ void loop()
     Serial.println(vegetable_flag_net);
     Serial.println("******************");
 
-    if (0 == carwash_flag && 0 == vegetable_flag_hand && 0 == vegetable_flag_net) // 此刻不在菜地浇水,也不在洗车
+    if (0 == carwash_flag && 0 == vegetable_flag_hand && 0 == vegetable_flag_net && 0 == pool_watering_flag) // 此刻不在菜地浇水,也不在洗车或鱼池浇水
     {
         time_to_go_flag = time2go();
         soil_to_go_flag = soil_go();
@@ -1293,11 +1160,20 @@ void loop()
     else if (1 == vegetable_flag_net || 1 == vegetable_flag_hand)
     {
         soil2wat = 1;
-        if (time_gap(timeinfo, start_work_time) > pin_watering_time[5])
+        if (time_gap(timeinfo, start_work_time) > pin_watering_time[length(working_solenoid_valve)-1]) // 菜地是最后一个电磁阀(index=7)
         {
             shut_all();
             vegetable_flag_net = 0;
             vegetable_flag_hand = 0;
+        }
+    }
+    else if (1 == pool_watering_flag) // 鱼池浇水独立计时
+    {
+        soil2wat = 1;
+        if (time_gap(timeinfo, start_work_time) > pin_watering_time[length(working_solenoid_valve)-3]) // 鱼池是倒数第三个电磁阀(index=5)
+        {
+            shut_all();
+            pool_watering_flag = 0;
         }
     }
     for (i = 0; i < length(working_solenoid_valve); i++)
